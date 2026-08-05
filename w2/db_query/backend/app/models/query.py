@@ -11,6 +11,7 @@ class QuerySource(str, Enum):
 
     MANUAL = "manual"
     NATURAL_LANGUAGE = "natural_language"
+    EXPORT = "export"
 
 
 class QueryHistory(SQLModel, table=True):

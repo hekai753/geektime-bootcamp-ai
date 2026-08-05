@@ -365,3 +365,23 @@ GET {{baseUrl}}/dbs HTTP/1.1
 ### MySQL 10. Get MySQL Query History
 ###
 GET {{baseUrl}}/dbs/{{mysqlDbName}}/history HTTP/1.1
+
+###
+### MySQL 11. Export Query Result as CSV (file download)
+###
+POST {{baseUrl}}/dbs/{{mysqlDbName}}/export?format=csv HTTP/1.1
+Content-Type: application/json
+
+{
+  "sql": "SELECT * FROM candidates LIMIT 100"
+}
+
+###
+### MySQL 12. Export Query Result as JSON
+###
+POST {{baseUrl}}/dbs/{{mysqlDbName}}/export?format=json HTTP/1.1
+Content-Type: application/json
+
+{
+  "sql": "SELECT * FROM candidates LIMIT 100"
+}
