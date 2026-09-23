@@ -3,6 +3,20 @@
     "playwright": {
       "command": "npx",
       "args": ["-y", "@playwright/mcp@latest"]
+    },
+    "pg-mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/Users/hekai/Data/Doc/geektime-bootcamp-ai/w5/pg-mcp",
+        "run",
+        "python",
+        "-m",
+        "pg_mcp"
+      ],
+      "env": {
+        "ANTHROPIC_MODEL": "glm-5.3-flash"
+      }
     }
   }
 }

@@ -87,7 +87,7 @@ class TestSchemaCache:
         sample_schema: DatabaseSchema,
     ):
         """Test that load stores schema in cache."""
-        with patch("pg_mcp.cache.schema_cache.SchemaIntrospector") as mock_introspector_class:
+        with patch("pg_mcp.db.driver.SchemaIntrospector") as mock_introspector_class:
             mock_introspector = AsyncMock()
             mock_introspector.introspect.return_value = sample_schema
             mock_introspector_class.return_value = mock_introspector
@@ -107,7 +107,7 @@ class TestSchemaCache:
         """Test that load doesn't cache when caching is disabled."""
         cache = SchemaCache(disabled_cache_config)
 
-        with patch("pg_mcp.cache.schema_cache.SchemaIntrospector") as mock_introspector_class:
+        with patch("pg_mcp.db.driver.SchemaIntrospector") as mock_introspector_class:
             mock_introspector = AsyncMock()
             mock_introspector.introspect.return_value = sample_schema
             mock_introspector_class.return_value = mock_introspector
@@ -173,7 +173,7 @@ class TestSchemaCache:
         cache._cache["test_db"] = sample_schema
         cache._cache_timestamps["test_db"] = old_time
 
-        with patch("pg_mcp.cache.schema_cache.SchemaIntrospector") as mock_introspector_class:
+        with patch("pg_mcp.db.driver.SchemaIntrospector") as mock_introspector_class:
             mock_introspector = AsyncMock()
             mock_introspector.introspect.return_value = sample_schema
             mock_introspector_class.return_value = mock_introspector
@@ -308,7 +308,7 @@ class TestSchemaCache:
 
         pools = {"test_db": mock_pool}
 
-        with patch("pg_mcp.cache.schema_cache.SchemaIntrospector") as mock_introspector_class:
+        with patch("pg_mcp.db.driver.SchemaIntrospector") as mock_introspector_class:
             mock_introspector = AsyncMock()
             mock_introspector.introspect.return_value = sample_schema
             mock_introspector_class.return_value = mock_introspector
@@ -340,7 +340,7 @@ class TestSchemaCache:
 
         pools = {"test_db": mock_pool}
 
-        with patch("pg_mcp.cache.schema_cache.SchemaIntrospector") as mock_introspector_class:
+        with patch("pg_mcp.db.driver.SchemaIntrospector") as mock_introspector_class:
             # Make introspection fail
             mock_introspector = AsyncMock()
             mock_introspector.introspect.side_effect = Exception("Test error")

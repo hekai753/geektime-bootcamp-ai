@@ -50,6 +50,29 @@ services:
   # ==========================================================================
   # PostgreSQL MCP Server
   # ==========================================================================
+  # ==========================================================================
+  # MySQL (optional secondary database, multi-database demo)
+  # ==========================================================================
+  mysql:
+    image: mysql:8.0
+    container_name: pg-mcp-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: \${MYSQL_ROOT_PASSWORD:-mysql_root_pw}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./fixtures/04_mysql_blog.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pg-mcp-network
+
+
   pg-mcp:
     build:
       context: .
@@ -204,6 +227,7 @@ networks:
 volumes:
   # PostgreSQL data persistence
   postgres_data:
+  mysql_data:
     driver: local
     name: pg-mcp-postgres-data
 

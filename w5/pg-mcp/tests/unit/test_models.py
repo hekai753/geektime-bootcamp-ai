@@ -4,6 +4,8 @@ Tests for schema, query, and error models to ensure correct validation
 and behavior.
 """
 
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
@@ -443,3 +445,54 @@ class TestErrorModels:
         assert detail.code == ErrorCode.SECURITY_VIOLATION
         assert detail.message == "Blocked function"
         assert detail.details["function"] == "pg_sleep"
+
+
+class TestQueryResponseSerialization:
+    """Pin the single to_dict() contract on QueryResponse (AC5)."""
+
+    def _response(self, **kwargs: Any) -> QueryResponse:
+        """Build a QueryResponse with explicit success/error consistency."""
+        defaults: dict[str, Any] = {"success": True}
+        if not kwargs.get("success", True):
+            defaults["error"] = ErrorDetail(code="X", message="fail")
+        defaults.update(kwargs)
+        return QueryResponse(**defaults)
+
+    def test_to_dict_includes_all_fields(self) -> None:
+        """None fields stay visible as None (exclude_none must not drop them)."""
+        d = self._response().to_dict()
+        expected_keys = {
+            "success",
+            "generated_sql",
+            "validation",
+            "data",
+            "error",
+            "confidence",
+            "tokens_used",
+        }
+        assert expected_keys.issubset(d.keys())
+        assert d["validation"] is None
+        assert d["data"] is None
+
+    def test_to_dict_tokens_used_defaults_to_zero(self) -> None:
+        """tokens_used must always be present; None becomes 0."""
+        d = self._response().to_dict()
+        assert d["tokens_used"] == 0
+
+    def test_to_dict_tokens_used_preserved_when_set(self) -> None:
+        d = self._response(tokens_used=42).to_dict()
+        assert d["tokens_used"] == 42
+
+    def test_to_dict_error_payload(self) -> None:
+        # QueryResponse.error uses the ErrorDetail defined in models.query,
+        # not the identically-named class in models.errors.
+        from pg_mcp.models.query import ErrorDetail as QueryErrorDetail
+
+        response = QueryResponse(
+            success=False,
+            error=QueryErrorDetail(code="SECURITY_VIOLATION", message="blocked"),
+        )
+        d = response.to_dict()
+        assert d["success"] is False
+        assert d["error"]["code"] == "SECURITY_VIOLATION"
+        assert d["tokens_used"] == 0

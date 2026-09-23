@@ -28,7 +28,7 @@ class TestDatabaseConfig:
 
     def test_default_values(self) -> None:
         """Test default configuration values."""
-        config = DatabaseConfig()
+        config = DatabaseConfig(_env_file=None)
         assert config.host == "localhost"
         assert config.port == 5432
         assert config.name == "postgres"
@@ -119,20 +119,24 @@ class TestOpenAIConfig:
         assert config.temperature == 0.7
         assert config.timeout == 60.0
 
-    def test_empty_api_key_rejected(self) -> None:
-        """Test empty API key is rejected."""
-        with pytest.raises(ValidationError, match="must not be empty"):
-            OpenAIConfig(api_key="")
+    def test_empty_api_key_allowed_at_config_level(self) -> None:
+        """Config loading must not require an API key (server/tests start without one).
 
-    def test_whitespace_api_key_rejected(self) -> None:
-        """Test whitespace-only API key is rejected."""
-        with pytest.raises(ValidationError, match="must not be empty"):
-            OpenAIConfig(api_key="   ")
+        The key is validated lazily by the LLM client when a provider call
+        is actually made.
+        """
+        config = OpenAIConfig(api_key="")
+        assert config.api_key.get_secret_value() == ""
 
-    def test_invalid_api_key_format(self) -> None:
-        """Test API key must start with sk-."""
-        with pytest.raises(ValidationError, match="must start with 'sk-'"):
-            OpenAIConfig(api_key="invalid-key")
+    def test_whitespace_api_key_allowed_at_config_level(self) -> None:
+        """Whitespace-only key is treated as missing, not as a config error."""
+        config = OpenAIConfig(api_key="   ")
+        assert config.api_key.get_secret_value().strip() == ""
+
+    def test_arbitrary_api_key_format_allowed(self) -> None:
+        """Key format is provider-specific; config layer does not enforce 'sk-'."""
+        config = OpenAIConfig(api_key="custom-format-key")
+        assert config.api_key.get_secret_value() == "custom-format-key"
 
     def test_invalid_max_tokens(self) -> None:
         """Test invalid max_tokens is rejected."""
@@ -156,12 +160,14 @@ class TestSecurityConfig:
 
     def test_default_values(self) -> None:
         """Test default configuration values."""
-        config = SecurityConfig()
-        assert config.allow_write_operations is False
+        config = SecurityConfig(_env_file=None)
         assert config.max_rows == 10000
         assert config.max_execution_time == 30.0
         assert "pg_sleep" in config.blocked_functions
         assert "pg_read_file" in config.blocked_functions
+        assert config.blocked_tables == []
+        assert config.blocked_columns == []
+        assert config.allow_explain is False
 
     def test_custom_blocked_functions(self) -> None:
         """Test custom blocked functions."""
@@ -179,10 +185,16 @@ class TestSecurityConfig:
         assert "func2" in config.blocked_functions
         assert "func3" in config.blocked_functions
 
-    def test_allow_write_operations(self) -> None:
-        """Test enabling write operations."""
-        config = SecurityConfig(allow_write_operations=True)
-        assert config.allow_write_operations is True
+    def test_blocked_tables_and_columns(self) -> None:
+        """Test blocked tables/columns config including comma-separated form."""
+        config = SecurityConfig(
+            blocked_tables="secrets, audit_log",
+            blocked_columns=["password_hash"],
+            allow_explain=True,
+        )
+        assert config.blocked_tables == ["secrets", "audit_log"]
+        assert config.blocked_columns == ["password_hash"]
+        assert config.allow_explain is True
 
     def test_invalid_max_rows(self) -> None:
         """Test invalid max_rows is rejected."""
@@ -198,26 +210,26 @@ class TestValidationConfig:
 
     def test_default_values(self) -> None:
         """Test default configuration values."""
-        config = ValidationConfig()
+        config = ValidationConfig(_env_file=None)
         assert config.max_question_length == 10000
-        assert config.min_confidence_score == 70
+        assert config.confidence_threshold == 70
 
     def test_custom_values(self) -> None:
         """Test custom configuration values."""
         config = ValidationConfig(
             max_question_length=5000,
-            min_confidence_score=80,
+            confidence_threshold=80,
         )
         assert config.max_question_length == 5000
-        assert config.min_confidence_score == 80
+        assert config.confidence_threshold == 80
 
-    def test_invalid_confidence_score(self) -> None:
-        """Test invalid confidence score is rejected."""
+    def test_invalid_confidence_threshold(self) -> None:
+        """Test invalid confidence threshold is rejected."""
         with pytest.raises(ValidationError):
-            ValidationConfig(min_confidence_score=-1)
+            ValidationConfig(confidence_threshold=-1)
 
         with pytest.raises(ValidationError):
-            ValidationConfig(min_confidence_score=101)
+            ValidationConfig(confidence_threshold=101)
 
 
 class TestCacheConfig:
@@ -225,7 +237,7 @@ class TestCacheConfig:
 
     def test_default_values(self) -> None:
         """Test default configuration values."""
-        config = CacheConfig()
+        config = CacheConfig(_env_file=None)
         assert config.schema_ttl == 3600
         assert config.max_size == 100
         assert config.enabled is True
@@ -255,7 +267,7 @@ class TestResilienceConfig:
 
     def test_default_values(self) -> None:
         """Test default configuration values."""
-        config = ResilienceConfig()
+        config = ResilienceConfig(_env_file=None)
         assert config.max_retries == 3
         assert config.retry_delay == 1.0
         assert config.backoff_factor == 2.0
@@ -287,7 +299,7 @@ class TestObservabilityConfig:
 
     def test_default_values(self) -> None:
         """Test default configuration values."""
-        config = ObservabilityConfig()
+        config = ObservabilityConfig(_env_file=None)
         # metrics_enabled 在测试环境可能被禁用以避免启动 HTTP 服务器
         # 生产环境应该通过环境变量显式设置
         assert config.metrics_port == 9090
@@ -360,12 +372,12 @@ class TestSettings:
                 port=5433,
             ),
             security=SecurityConfig(
-                allow_write_operations=True,
+                blocked_tables=["secrets"],
             ),
         )
         assert settings.database.host == "custom.host"
         assert settings.database.port == 5433
-        assert settings.security.allow_write_operations is True
+        assert settings.security.blocked_tables == ["secrets"]
 
 
 class TestSettingsGlobalInstance:

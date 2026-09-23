@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pg-mcp · Natural Language Database Queries</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a23; --panel2: #1d212e; --border: #2a2f3e;
+    --text: #e8eaf0; --muted: #8b90a0; --accent: #6c8cff; --ok: #3fb96f; --err: #e05b5b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.5 -apple-system, "Segoe UI", sans-serif; height: 100vh; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  header h1 { font-size: 17px; font-weight: 600; }
+  header .spacer { flex: 1; }
+  select, input, textarea, button { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:hover { filter: brightness(1.1); }
+  main { flex: 1; display: flex; min-height: 0; }
+  #chat { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 78%; padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.bot { align-self: flex-start; background: var(--panel2); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+  .msg .meta { margin-top: 8px; font-size: 12px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; }
+  .msg .sql { margin-top: 8px; background: #0d0f15; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: #9ad1ff; white-space: pre-wrap; }
+  .badge { padding: 1px 8px; border-radius: 999px; font-size: 11px; }
+  .badge.ok { background: rgba(63,185,111,.15); color: var(--ok); }
+  .badge.err { background: rgba(224,91,91,.15); color: var(--err); }
+  .composer { display: flex; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--border); background: var(--panel); }
+  .composer input { flex: 1; }
+  #settingsPanel { width: 400px; border-left: 1px solid var(--border); background: var(--panel); overflow-y: auto; padding: 18px; display: none; }
+  #settingsPanel.open { display: block; }
+  #settingsPanel h2 { font-size: 15px; margin: 14px 0 8px; color: var(--accent); }
+  #settingsPanel label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 2px; }
+  #settingsPanel input, #settingsPanel select, #settingsPanel textarea { width: 100%; }
+  #settingsPanel .row { display: flex; gap: 8px; }
+  #settingsPanel .row > * { flex: 1; }
+  #saveStatus { margin-top: 10px; font-size: 13px; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>pg-mcp</h1>
+  <select id="dbSelect" title="Target database"></select>
+  <select id="returnType">
+    <option value="result">Run &amp; show results</option>
+    <option value="sql">Generate SQL only</option>
+  </select>
+  <div class="spacer"></div>
+  <button id="toggleSettings">⚙ Settings</button>
+</header>
+<main>
+  <section id="chat">
+    <div id="messages"></div>
+    <div class="composer">
+      <input id="question" placeholder="Ask a question, e.g. How many users registered in the last 30 days?" autofocus>
+      <button class="primary" id="ask">Ask</button>
+    </div>
+  </section>
+  <aside id="settingsPanel"></aside>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const messages = $("messages"), dbSelect = $("dbSelect");
+
+function addMsg(cls, html) {
+  const div = document.createElement("div");
+  div.className = "msg " + cls;
+  div.innerHTML = html;
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+  return div;
+}
+
+async function loadDatabases() {
+  const res = await fetch("/api/databases");
+  const data = await res.json();
+  dbSelect.innerHTML = "";
+  (data.databases || []).forEach((db) => {
+    const opt = document.createElement("option");
+    opt.value = db.name;
+    opt.textContent = `${db.name} (${db.db_type})`;
+    dbSelect.appendChild(opt);
+  });
+}
+
+async function ask() {
+  const question = $("question").value.trim();
+  if (!question) return;
+  $("question").value = "";
+  addMsg("user", question);
+  const el = addMsg("bot", "Thinking…");
+  try {
+    const res = await fetch("/api/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question,
+        database: dbSelect.value || null,
+        return_type: $("returnType").value,
+      }),
+    });
+    const data = await res.json();
+    if (!data.success) {
+      el.innerHTML = `<span class="badge err">error</span> ${data.error?.code || ""}<br>${data.error?.message || "Unknown error"}`;
+      return;
+    }
+    let html = `<span class="badge ok">success</span><div class="sql">${data.generated_sql}</div>`;
+    if (data.data) {
+      const rows = data.data.rows || [];
+      html += `<div class="meta"><span>${data.data.row_count} rows</span><span>${data.data.execution_time_ms?.toFixed(1)} ms</span><span>confidence ${data.confidence}%</span></div>`;
+      if (rows.length) {
+        const cols = Object.keys(rows[0]);
+        const table = `<table border="1" cellspacing="0" cellpadding="4" style="margin-top:8px;border-collapse:collapse;font-size:13px">` +
+          `<tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr>` +
+          rows.slice(0, 50).map((r) => `<tr>${cols.map((c) => `<td>${r[c] ?? ""}</td>`).join("")}</tr>`).join("") +
+          `</table>`;
+        html += table + (rows.length > 50 ? `<div class="hint">showing 50 of ${rows.length}</div>` : "");
+      } else {
+        html += `<div class="hint">no rows</div>`;
+      }
+    } else {
+      html += `<div class="meta"><span>SQL-only mode</span><span>confidence ${data.confidence}%</span></div>`;
+    }
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<span class="badge err">error</span> ${e.message}`;
+  }
+}
+$("ask").addEventListener("click", ask);
+$("question").addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
+
+/* ---------------- settings panel ---------------- */
+const panel = $("settingsPanel");
+
+function field(label, id, value, type = "text") {
+  return `<label>${label}</label><input id="${id}" type="${type}" value="${(value ?? "").toString().replace(/"/g, "&quot;")}">`;
+}
+
+async function openSettings() {
+  panel.classList.toggle("open");
+  if (!panel.classList.contains("open")) return;
+  const res = await fetch("/api/settings");
+  const s = await res.json();
+  panel.innerHTML = `
+    <h2>Primary database</h2>
+    ${field("Type", "s_db_type", s.database.db_type)}
+    <div class="row">${field("Host", "s_db_host", s.database.host)}${field("Port", "s_db_port", s.database.port)}</div>
+    ${field("Name", "s_db_name", s.database.name)}
+    <div class="row">${field("User", "s_db_user", s.database.user)}${field("Password", "s_db_password", "", "password")}</div>
+    <div class="hint">Leave password empty to keep the stored one.</div>
+
+    <h2>Extra databases (JSON map)</h2>
+    <textarea id="s_databases" rows="6">${JSON.stringify(s.databases || {}, null, 2)}</textarea>
+    <div class="hint">Passwords shown masked; empty keeps stored value.</div>
+
+    <h2>LLM</h2>
+    <label>Provider</label>
+    <select id="s_provider">
+      <option value="openai" ${s.llm.provider === "openai" ? "selected" : ""}>OpenAI</option>
+      <option value="anthropic" ${s.llm.provider === "anthropic" ? "selected" : ""}>Anthropic (Claude)</option>
+    </select>
+    ${field("OpenAI API key", "s_openai_key", "", "password")}
+    ${field("Anthropic API key", "s_anthropic_key", "", "password")}
+    ${field("Anthropic model", "s_anthropic_model", s.anthropic.model)}
+
+    <h2>Security</h2>
+    ${field("Blocked tables (comma-separated)", "s_blocked_tables", (s.security.blocked_tables || []).join(", "))}
+    ${field("Blocked columns (comma-separated)", "s_blocked_columns", (s.security.blocked_columns || []).join(", "))}
+    <label>Allow EXPLAIN</label>
+    <select id="s_allow_explain">
+      <option value="false" ${!s.security.allow_explain ? "selected" : ""}>No</option>
+      <option value="true" ${s.security.allow_explain ? "selected" : ""}>Yes</option>
+    </select>
+
+    <h2>Resilience</h2>
+    <div class="row">${field("Max concurrent queries", "s_query_limit", s.resilience.query_rate_limit)}${field("Max concurrent LLM calls", "s_llm_limit", s.resilience.llm_rate_limit)}</div>
+
+    <div style="margin-top:16px"><button class="primary" id="saveSettings">Save &amp; apply</button></div>
+    <div id="saveStatus"></div>
+  `;
+  $("saveSettings").addEventListener("click", saveSettings);
+}
+
+async function saveSettings() {
+  const status = $("saveStatus");
+  status.textContent = "Saving and restarting components…";
+  let extra;
+  try { extra = JSON.parse($("s_databases").value || "{}"); }
+  catch (e) { status.textContent = "Extra databases JSON is invalid: " + e.message; return; }
+
+  const body = {
+    database: {
+      db_type: $("s_db_type").value, host: $("s_db_host").value, port: Number($("s_db_port").value),
+      name: $("s_db_name").value, user: $("s_db_user").value,
+    },
+    databases: extra,
+    llm: { provider: $("s_provider").value },
+    anthropic: { model: $("s_anthropic_model").value },
+    security: {
+      blocked_tables: $("s_blocked_tables").value.split(",").map((x) => x.trim()).filter(Boolean),
+      blocked_columns: $("s_blocked_columns").value.split(",").map((x) => x.trim()).filter(Boolean),
+      allow_explain: $("s_allow_explain").value === "true",
+    },
+    resilience: {
+      query_rate_limit: Number($("s_query_limit").value),
+      llm_rate_limit: Number($("s_llm_limit").value),
+    },
+  };
+  const oai = $("s_openai_key").value.trim();
+  const ant = $("s_anthropic_key").value.trim();
+  if (oai) body.openai = { api_key: oai };
+  if (ant) body.anthropic = { ...body.anthropic, api_key: ant };
+
+  const res = await fetch("/api/settings", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  status.textContent = data.status === "saved" ? "Saved ✓ components reloaded" : ("Failed: " + (data.error || "?"));
+  if (data.status === "saved") await loadDatabases();
+}
+
+$("toggleSettings").addEventListener("click", openSettings);
+loadDatabases();
+</script>
+</body>
+</html>

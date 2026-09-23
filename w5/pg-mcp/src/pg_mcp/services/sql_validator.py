@@ -26,13 +26,16 @@ class SQLValidator:
     """
 
     # Allowed statement types at the top level (including set operations)
-    ALLOWED_STATEMENT_TYPES: ClassVar = {
-        exp.Select, exp.Union, exp.Intersect, exp.Except
-    }
+    ALLOWED_STATEMENT_TYPES: ClassVar = {exp.Select, exp.Union, exp.Intersect, exp.Except}
 
     # Allowed top-level expressions (including CTEs)
     ALLOWED_TOP_LEVEL: ClassVar = {
-        exp.Select, exp.Union, exp.Intersect, exp.Except, exp.With, exp.Subquery
+        exp.Select,
+        exp.Union,
+        exp.Intersect,
+        exp.Except,
+        exp.With,
+        exp.Subquery,
     }
 
     # Forbidden statement types
@@ -80,6 +83,7 @@ class SQLValidator:
         blocked_tables: list[str] | None = None,
         blocked_columns: list[str] | None = None,
         allow_explain: bool = False,
+        dialect: str = "postgres",
     ) -> None:
         """Initialize SQL validator.
 
@@ -88,11 +92,13 @@ class SQLValidator:
             blocked_tables: Optional list of table names to block access to.
             blocked_columns: Optional list of column names to block access to.
             allow_explain: Whether to allow EXPLAIN statements.
+            dialect: SQL dialect used for parsing ("postgres" or "mysql").
         """
         self.config = config
         self.blocked_tables = {t.lower() for t in (blocked_tables or [])}
         self.blocked_columns = {c.lower() for c in (blocked_columns or [])}
         self.allow_explain = allow_explain
+        self.dialect = dialect
 
         # Combine built-in dangerous functions with custom blocked functions
         self.blocked_functions = self.BUILTIN_DANGEROUS_FUNCTIONS | {
@@ -130,7 +136,7 @@ class SQLValidator:
 
         # Parse SQL using SQLGlot
         try:
-            parsed = sqlglot.parse(sql, read="postgres")
+            parsed = sqlglot.parse(sql, read=self.dialect)
         except Exception as e:
             raise SQLParseError(f"Failed to parse SQL: {e}") from e
 
@@ -140,7 +146,7 @@ class SQLValidator:
                 "Multiple statements not allowed. Only single SELECT queries are permitted."
             )
 
-        if not parsed:
+        if not parsed:  # pragma: no cover - defensive; empty SQL is rejected above
             raise SQLParseError("No valid SQL statement found")
 
         statement = parsed[0]
@@ -172,7 +178,7 @@ class SQLValidator:
             # WITH statements are allowed, but we need to validate the main query
             if statement.this:
                 main_query = statement.this
-            else:
+            else:  # pragma: no cover - defensive; sqlglot always attaches a main query
                 raise SQLParseError("WITH statement has no main query")
         else:
             main_query = statement
@@ -297,13 +303,15 @@ class SQLValidator:
                 inner_stmt = subquery.this
 
                 # Check if the inner statement is a forbidden type
-                for forbidden_type in self.FORBIDDEN_STATEMENT_TYPES:
+                # Defensive: sqlglot cannot parse DML inside subqueries, so
+                # these branches guard against future parser behavior changes.
+                for forbidden_type in self.FORBIDDEN_STATEMENT_TYPES:  # pragma: no cover
                     if isinstance(inner_stmt, forbidden_type):
                         stmt_name = forbidden_type.__name__.upper()
                         return f"{stmt_name} statements in subqueries are not allowed"
 
                 # Ensure it's a SELECT
-                if not isinstance(inner_stmt, (exp.Select, exp.With)):
+                if not isinstance(inner_stmt, (exp.Select, exp.With)):  # pragma: no cover
                     return "Subqueries must contain only SELECT statements"
 
         return None
@@ -324,9 +332,9 @@ class SQLValidator:
             SQLParseError: If SQL cannot be parsed.
         """
         try:
-            parsed = sqlglot.parse_one(sql, read="postgres")
+            parsed = sqlglot.parse_one(sql, read=self.dialect)
             # Generate normalized SQL
-            return parsed.sql(dialect="postgres", pretty=False)
+            return parsed.sql(dialect=self.dialect, pretty=False)
         except Exception as e:
             raise SQLParseError(f"Failed to normalize SQL: {e}") from e
 
@@ -343,7 +351,7 @@ class SQLValidator:
             SQLParseError: If SQL cannot be parsed.
         """
         try:
-            parsed = sqlglot.parse_one(sql, read="postgres")
+            parsed = sqlglot.parse_one(sql, read=self.dialect)
             tables = []
 
             for table in parsed.find_all(exp.Table):

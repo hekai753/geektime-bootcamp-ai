@@ -6,12 +6,16 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "asyncpg>=0.31.0",
+    "aiomysql>=0.2.0",
     "sqlglot>=28.5.0",
     "pydantic>=2.12.0",
     "pydantic-settings>=2.12.0",
     "openai>=2.14.0",
+    "anthropic>=0.40.0",
     "prometheus-client>=0.23.0",
     "fastmcp>=2.14.1",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.38.0",
 ]
 
 [project.optional-dependencies]

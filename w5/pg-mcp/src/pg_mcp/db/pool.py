@@ -79,7 +79,7 @@ async def create_pools(configs: list[DatabaseConfig]) -> dict[str, Pool]:
     return pools
 
 
-async def close_pools(pools: dict[str, Pool], timeout: float = 10.0) -> None:
+async def close_pools(pools: dict[str, Pool], timeout: float = 10.0) -> None:  # noqa: ASYNC109
     """Close all connection pools gracefully.
 
     This function closes all pools and waits for all connections to be
@@ -101,20 +101,24 @@ async def close_pools(pools: dict[str, Pool], timeout: float = 10.0) -> None:
 
     logger = logging.getLogger(__name__)
 
+    import inspect
+
     for db_name, pool in pools.items():
         try:
-            # Try graceful close with timeout
-            await asyncio.wait_for(pool.close(), timeout=timeout)
+            # asyncpg's close() is a coroutine; aiomysql's is sync with a
+            # separate wait_closed() coroutine.
+            close_result = pool.close()
+            if inspect.isawaitable(close_result):
+                await asyncio.wait_for(close_result, timeout=timeout)
+            if hasattr(pool, "wait_closed"):
+                await asyncio.wait_for(pool.wait_closed(), timeout=timeout)
             logger.info(f"Connection pool for '{db_name}' closed gracefully")
-        except asyncio.TimeoutError:
-            # Force termination if graceful close times out
-            logger.warning(
-                f"Graceful close timed out for '{db_name}', forcing termination"
-            )
-            pool.terminate()
+        except TimeoutError:
+            logger.warning(f"Graceful close timed out for '{db_name}', forcing termination")
+            if hasattr(pool, "terminate"):
+                pool.terminate()
             logger.info(f"Connection pool for '{db_name}' terminated")
         except Exception as e:
-            # Log error but continue closing other pools
             logger.error(f"Error closing pool for '{db_name}': {e!s}")
-            # Force terminate on error
-            pool.terminate()
+            if hasattr(pool, "terminate"):
+                pool.terminate()

@@ -1,113 +1,62 @@
-# PostgreSQL MCP 服务器
+# pg-mcp — 自然语言数据库查询服务
 
-一个生产级的 [Model Context Protocol (MCP)](https://modelcontextprotocol.io) 服务器，使用户能够通过自然语言与 PostgreSQL 数据库进行交互。该服务器基于 FastMCP 构建，将自然语言问题转换为安全的 SQL 查询，执行查询并验证结果。一些参考文档：
+**用自然语言查询 PostgreSQL 和 MySQL 数据库。** 提供两种使用方式：
 
-- Python Postgres MCP 需求研究
-: <https://gemini.google.com/share/c87a73f0969b>
-- SQLGlot 深度研究方案
-: <https://gemini.google.com/share/cc5e45c76c8f>
+- **Web UI**（`:8000`）：聊天式查询界面 + 可视化设置页，所有配置在网页上完成
+- **MCP 服务器**（stdio）：接入 Claude Desktop / Claude Code 等 MCP 客户端
+
+架构上两条入口共享同一套编排组件（`QueryOrchestrator`），配置统一读取
+`pg-mcp.config.json`（Web 设置页可视化编辑），环境变量仍可覆盖一切。
+
+---
 
 ## 功能特性
 
-- **自然语言转 SQL**：使用 GPT-5.2-mini 将普通英文问题转换为优化的 PostgreSQL 查询
-- **安全至上**：只读强制执行、阻止危险函数、SQL 注入防护、查询超时控制
-- **结果验证**：基于 AI 的结果验证，提供置信度评分
-- **Schema 智能化**：自动 Schema 缓存，基于 TTL 的刷新机制
-- **生产就绪**：连接池管理、熔断器、限流、全面的指标收集
-- **MCP 兼容**：支持 Claude Desktop 和任何 MCP 兼容客户端
+| 能力 | 说明 |
+|---|---|
+| 自然语言 → SQL | LLM 生成 SQL，安全校验后执行，AI 复核结果并给出 0-100 置信度 |
+| 多数据库 | 同时配置多个 PostgreSQL / MySQL 库，按请求中的 `database` 字段路由 |
+| 安全控制 | 只读强制、危险函数黑名单、表/列黑名单、EXPLAIN 策略，全部可配置 |
+| 弹性 | 查询/LLM 并发限流、验证失败指数退避重试、熔断器 |
+| 可观测 | Prometheus 指标（查询计数/耗时/LLM 调用/token/拒绝数）、请求级 tracing |
+| LLM 可插拔 | `LLM_PROVIDER=openai` 或 `anthropic`（Claude API），一行配置切换 |
 
 ## 快速开始
 
 ### 前置条件
 
-- Python 3.14+
-- PostgreSQL 12+
-- OpenAI API 密钥（用于 GPT-5.2-mini）
-- UV 包管理器（推荐）或 pip
+- Python 3.14+ 与 [uv](https://docs.astral.sh/uv/)
+- 可访问的 PostgreSQL 和/或 MySQL 数据库
+- 一个 LLM API Key（Anthropic 或 OpenAI）
 
-### 安装
-
-#### 使用 UV（推荐）
+### 安装与启动
 
 ```bash
-# 克隆仓库
-git clone <repository-url>
 cd pg-mcp
+uv sync --all-extras
 
-# 安装依赖
-uv sync
+# 方式一：直接启动 Web UI（默认 http://localhost:8000）
+uv run python -m pg_mcp.webapp
 
-# 复制环境配置模板
-cp .env.example .env
-
-# 编辑 .env 并配置参数
-vi .env
+# 方式二：在设置页里完成以下配置（也可写 .env / pg-mcp.config.json）
+#   1. 数据库连接（PostgreSQL / MySQL）
+#   2. LLM Provider 与 API Key
+# 保存后组件自动热重载，立即可用
 ```
 
-#### 使用 pip
+### Web UI
 
-```bash
-# 克隆仓库
-git clone <repository-url>
-cd pg-mcp
+打开 `http://localhost:8000`：
 
-# 创建虚拟环境
-python -m venv .venv
-source .venv/bin/activate  # Windows 系统: .venv\Scripts\activate
+- **聊天页**：选择目标库 → 输入自然语言问题 → 展示生成的 SQL、查询结果表格、
+  执行耗时与置信度；`return_type=sql` 模式只生成 SQL 不执行
+- **设置页**（右上角 ⚙）：数据库连接（类型/主机/端口/库名/账号）、附加数据库、
+  LLM Provider 与密钥、表/列黑名单、EXPLAIN 开关、并发限流参数。
+  保存即写入 `pg-mcp.config.json` 并热生效
 
-# 安装依赖
-pip install -e .
+### 接入 Claude Desktop / Claude Code（零 env 配置）
 
-# 复制环境配置模板
-cp .env.example .env
-
-# 编辑 .env 并配置参数
-vi .env
-```
-
-### 配置
-
-编辑 `.env` 文件以配置您的设置：
-
-```bash
-# 数据库配置
-DATABASE_HOST=localhost
-DATABASE_PORT=5432
-DATABASE_NAME=your_database
-DATABASE_USER=your_user
-DATABASE_PASSWORD=your_password
-
-# OpenAI 配置
-OPENAI_API_KEY=sk-your-api-key-here
-OPENAI_MODEL=gpt-5.2-mini
-
-# 安全设置（可选，显示默认值）
-SECURITY_ALLOW_WRITE_OPERATIONS=false
-SECURITY_MAX_ROWS=10000
-SECURITY_MAX_EXECUTION_TIME=30
-```
-
-完整的配置选项请参考 `.env.example`。
-
-### 运行服务器
-
-#### 独立模式
-
-```bash
-# 使用 UV
-uv run python main.py
-
-# 或使用 pip
-python main.py
-```
-
-#### 与 Claude Desktop 集成
-
-添加以下配置到 Claude Desktop MCP 设置文件：
-
-**macOS/Linux**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+因为配置都在 `pg-mcp.config.json` 里，MCP 配置文件**不再需要 env 块**：
 
 ```json
 {
@@ -115,574 +64,147 @@ python main.py
     "postgres": {
       "command": "uv",
       "args": [
-        "--directory",
-        "/absolute/path/to/pg-mcp",
-        "run",
-        "python",
-        "main.py"
-      ],
-      "env": {
-        "DATABASE_HOST": "localhost",
-        "DATABASE_NAME": "your_database",
-        "DATABASE_USER": "your_user",
-        "DATABASE_PASSWORD": "your_password",
-        "OPENAI_API_KEY": "sk-your-api-key-here"
-      }
+        "--directory", "/absolute/path/to/pg-mcp",
+        "run", "python", "main.py"
+      ]
     }
   }
 }
 ```
 
-详细配置说明请参阅 [Claude Desktop 配置](#claude-desktop-配置)。
+MCP 入口在进程启动时读取配置；设置页改动后重启 Claude Desktop 即生效。
 
-## 使用方法
+## 配置
 
-### 示例查询
+优先级：**环境变量 > `pg-mcp.config.json` > 默认值**
 
-通过 Claude Desktop 或其他 MCP 客户端连接后，您可以提出自然语言问题：
+| 配置方式 | 适用场景 |
+|---|---|
+| Web 设置页 | 日常使用、演示（推荐） |
+| `pg-mcp.config.json` | 随项目保存的非敏感配置（已 gitignore） |
+| 环境变量 / `.env` | 容器、CI、覆盖特定项 |
 
-#### 简单查询
+主要配置项（环境变量名）：
 
-```
-How many tables are in the database?
-→ SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'
+```bash
+# 主数据库（DATABASE_*，别名为主库名）
+DATABASE_DB_TYPE=postgres        # 或 mysql
+DATABASE_HOST=10.128.8.20
+DATABASE_PORT=5432
+DATABASE_NAME=blog_small
+DATABASE_USER=he3db
+DATABASE_PASSWORD=...
 
-Show me all users
-→ SELECT * FROM users LIMIT 10000
+# 附加数据库（JSON map，别名 -> 连接配置）
+DATABASES={"mysql_blog": {"db_type": "mysql", "host": "...", "port": 3306, "name": "blog_small", "user": "root", "password": "..."}}
 
-What are the column names in the products table?
-→ SELECT column_name, data_type FROM information_schema.columns
-  WHERE table_name = 'products'
-```
+# LLM
+LLM_PROVIDER=anthropic           # openai | anthropic
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
+ANTHROPIC_API_KEY=...            # 或网关变量
+ANTHROPIC_BASE_URL=...           # Anthropic 兼容网关（可选）
+ANTHROPIC_AUTH_TOKEN=...         # Bearer token 方式（可选）
+ANTHROPIC_MODEL=claude-haiku-4-5
 
-#### 分析查询
+# 安全
+SECURITY_BLOCKED_TABLES=secrets, audit_log
+SECURITY_BLOCKED_COLUMNS=password_hash
+SECURITY_ALLOW_EXPLAIN=false
+SECURITY_MAX_ROWS=10000
+SECURITY_MAX_EXECUTION_TIME=30
 
-```
-What are the top 10 products by sales?
-→ SELECT product_name, SUM(quantity * price) as total_sales
-  FROM orders
-  GROUP BY product_name
-  ORDER BY total_sales DESC
-  LIMIT 10
-
-How many users registered in the last 30 days?
-→ SELECT COUNT(*) FROM users
-  WHERE created_at > CURRENT_DATE - INTERVAL '30 days'
-```
-
-#### 仅 SQL 模式
-
-您也可以只请求 SQL 而不执行：
-
-```
-Generate SQL to find duplicate emails
-Return Type: sql
-→ Returns: SELECT email, COUNT(*) FROM users GROUP BY email HAVING COUNT(*) > 1
-```
-
-### 返回类型
-
-服务器支持两种返回类型：
-
-- **`result`**（默认）：执行查询并返回结果
-- **`sql`**：生成并验证 SQL，但不执行
-
-### 响应格式
-
-#### 成功查询响应
-
-```json
-{
-  "success": true,
-  "generated_sql": "SELECT COUNT(*) FROM users",
-  "data": {
-    "columns": ["count"],
-    "rows": [[1523]],
-    "row_count": 1,
-    "execution_time": 0.023
-  },
-  "confidence": 95,
-  "tokens_used": 234
-}
+# 弹性（已实际生效于请求路径）
+RESILIENCE_QUERY_RATE_LIMIT=10   # 最大并发查询
+RESILIENCE_LLM_RATE_LIMIT=5      # 最大并发 LLM 调用
+RESILIENCE_MAX_RETRIES=3
+RESILIENCE_RETRY_DELAY=1.0
+RESILIENCE_BACKOFF_FACTOR=2.0
+RESILIENCE_CIRCUIT_BREAKER_THRESHOLD=5
 ```
 
-#### 仅 SQL 响应
-
-```json
-{
-  "success": true,
-  "generated_sql": "SELECT * FROM users WHERE created_at > CURRENT_DATE - INTERVAL '30 days'",
-  "confidence": 90,
-  "tokens_used": 156
-}
-```
-
-#### 错误响应
-
-```json
-{
-  "success": false,
-  "error": {
-    "code": "SECURITY_VIOLATION",
-    "message": "Query contains blocked operation: DELETE",
-    "details": {
-      "blocked_operation": "DELETE"
-    }
-  }
-}
-```
+完整模板见 `.env.example`。
 
 ## 架构
 
-### 核心组件
-
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      MCP Server (FastMCP)                   │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Query Orchestrator                       │
-│  - Coordinates all components                               │
-│  - Manages retry logic                                      │
-│  - Handles error recovery                                   │
-└─────────────────────────────────────────────────────────────┘
-           │                  │                  │
-           ▼                  ▼                  ▼
-    ┌───────────┐     ┌────────────┐     ┌──────────────┐
-    │   SQL     │     │    SQL     │     │     SQL      │
-    │ Generator │────▶│ Validator  │────▶│  Executor    │
-    │ (LLM)     │     │ (Security) │     │ (Database)   │
-    └───────────┘     └────────────┘     └──────────────┘
-           │                                      │
-           ▼                                      ▼
-    ┌───────────┐                          ┌──────────────┐
-    │  Schema   │                          │   Result     │
-    │  Cache    │                          │  Validator   │
-    └───────────┘                          │  (LLM)       │
-                                           └──────────────┘
+Claude Desktop ──stdio──┐
+                        ▼
+                  server.py (MCP)          webapp (FastAPI :8000)
+                        └────────┬─────────────┘
+                                 ▼  共享组件（同一装配、同一配置）
+                        QueryOrchestrator
+        ┌───────────┬───────────┼────────────┬──────────────┐
+        ▼           ▼           ▼            ▼              ▼
+   SQLGenerator  SQLValidator  SQLExecutor  ResultValidator  Metrics/Tracing
+   (openai|      (sqlglot      (PG|MySQL    (openai|         (限流/熔断/
+    anthropic)    方言感知)      驱动适配)     anthropic)       重试已接入)
+        └───────────┴───────────┴──────┬─────┴──────────────┘
+                                       ▼
+                        PostgreSQL (asyncpg) | MySQL (aiomysql)
 ```
 
-### 安全特性
+查询流水线：解析库路由 → Schema 缓存 → LLM 生成 SQL → 安全校验（黑名单/只读/
+方言解析）→ 只读事务执行（行数限制/超时）→ LLM 结果验证（置信度）→ 结构化响应。
 
-1. **只读强制执行**：默认仅允许 SELECT 查询
-2. **阻止危险函数**：黑名单包含危险的 PostgreSQL 函数（pg_sleep、文件 I/O 等）
-3. **SQL 解析**：使用 sqlglot 进行准确的 SQL 结构验证
-4. **注入防护**：参数化查询和输入清理
-5. **资源限制**：
-   - 行数限制（默认：10,000）
-   - 查询超时（默认：30 秒）
-   - 连接池管理
-6. **事务隔离**：所有查询在只读事务中运行
-
-### 弹性特性
-
-- **熔断器**：防止级联 LLM API 失败
-- **限流**：防止 API 配额耗尽
-- **重试逻辑**：自动重试瞬时故障，使用指数退避
-- **连接池**：高效的数据库连接复用
-- **Schema 缓存**：基于 TTL 的缓存减少数据库元数据查询
-
-## 配置参考
-
-### 数据库设置
-
-| 变量                       | 描述            | 默认值      |
-|----------------------------|-----------------|-------------|
-| `DATABASE_HOST`            | PostgreSQL 主机 | `localhost` |
-| `DATABASE_PORT`            | PostgreSQL 端口 | `5432`      |
-| `DATABASE_NAME`            | 数据库名称      | 必需        |
-| `DATABASE_USER`            | 数据库用户      | 必需        |
-| `DATABASE_PASSWORD`        | 数据库密码      | 必需        |
-| `DATABASE_MIN_POOL_SIZE`   | 池中最小连接数  | `5`         |
-| `DATABASE_MAX_POOL_SIZE`   | 池中最大连接数  | `20`        |
-| `DATABASE_COMMAND_TIMEOUT` | 查询超时（秒）    | `30`        |
-
-### OpenAI 设置
-
-| 变量                 | 描述                    | 默认值         |
-|----------------------|-------------------------|----------------|
-| `OPENAI_API_KEY`     | OpenAI API 密钥         | 必需           |
-| `OPENAI_MODEL`       | 使用的模型              | `gpt-5.2-mini` |
-| `OPENAI_MAX_TOKENS`  | 每次请求的最大 token 数 | `32000`        |
-| `OPENAI_TEMPERATURE` | 模型温度                | `0.0`          |
-| `OPENAI_TIMEOUT`     | API 超时（秒）            | `30`           |
-
-### 安全设置
-
-| 变量                              | 描述                      | 默认值            |
-|-----------------------------------|---------------------------|-------------------|
-| `SECURITY_ALLOW_WRITE_OPERATIONS` | 允许 INSERT/UPDATE/DELETE | `false`           |
-| `SECURITY_BLOCKED_FUNCTIONS`      | 逗号分隔的函数黑名单      | 参考 .env.example |
-| `SECURITY_MAX_ROWS`               | 每个查询的最大行数        | `10000`           |
-| `SECURITY_MAX_EXECUTION_TIME`     | 查询超时（秒）              | `30`              |
-
-### 缓存设置
-
-| 变量               | 描述                | 默认值 |
-|--------------------|---------------------|--------|
-| `CACHE_ENABLED`    | 启用 Schema 缓存    | `true` |
-| `CACHE_SCHEMA_TTL` | Schema 缓存 TTL（秒） | `3600` |
-| `CACHE_MAX_SIZE`   | 最大缓存 Schema 数  | `100`  |
-
-### 弹性设置
-
-| 变量                                   | 描述             | 默认值 |
-|----------------------------------------|------------------|--------|
-| `RESILIENCE_MAX_RETRIES`               | 最大重试次数     | `3`    |
-| `RESILIENCE_RETRY_DELAY`               | 初始重试延迟（秒） | `1.0`  |
-| `RESILIENCE_BACKOFF_FACTOR`            | 指数退避倍数     | `2.0`  |
-| `RESILIENCE_CIRCUIT_BREAKER_THRESHOLD` | 熔断前的失败数   | `5`    |
-| `RESILIENCE_CIRCUIT_BREAKER_TIMEOUT`   | 熔断器超时（秒）   | `60`   |
-
-### 可观测性设置
-
-| 变量                            | 描述                 | 默认值 |
-|---------------------------------|----------------------|--------|
-| `OBSERVABILITY_METRICS_ENABLED` | 启用 Prometheus 指标 | `true` |
-| `OBSERVABILITY_METRICS_PORT`    | 指标 HTTP 端口       | `9090` |
-| `OBSERVABILITY_LOG_LEVEL`       | 日志级别             | `INFO` |
-| `OBSERVABILITY_LOG_FORMAT`      | 日志格式（json/text）  | `json` |
-
-## 开发
-
-### 设置开发环境
+## 测试
 
 ```bash
-# 安装开发依赖
-uv sync --all-extras
-
-# 安装 pre-commit 钩子（可选）
-pre-commit install
+uv run pytest --cov=src --cov-report=term   # 全量（unit 无外部依赖；integration/e2e 需真实 PG）
+uv run pytest tests/unit -q                 # 仅单元测试（mock，无需数据库）
+uv run ruff check . && uv run mypy src      # Lint 与类型检查
 ```
 
-### 运行测试
+- 集成 / E2E 测试需要真实 PostgreSQL（加载 `fixtures/01_small_db.sql`）
+- MySQL 支持的测试库脚本：`fixtures/04_mysql_blog.sql`
+- 安全模块（sql_validator 等）覆盖率 ≥95%，总体 ≥80%
 
-```bash
-# 运行所有测试
-uv run pytest
+## 效果截图
 
-# 运行并生成覆盖率报告
-uv run pytest --cov=src --cov-report=html
+| 文件 | 内容 |
+|---|---|
+| `screenshots/ui-chat.png` | Web UI：同一次会话中路由 PostgreSQL 与 MySQL 两个库，展示生成的 SQL、结果表格与置信度 |
+| `screenshots/mcp-tool.png` | MCP stdio 入口：`tools/list` 与 `tools/call query` 的真实协议交互结果 |
 
-# 运行特定测试类别
-uv run pytest tests/unit/          # 仅单元测试
-uv run pytest tests/integration/   # 集成测试
-uv run pytest tests/e2e/           # 端到端测试
-uv run pytest -m integration       # 标记为集成的测试
-```
+## 测试数据
 
-### 代码质量
+`fixtures/` 提供三套规模的测试库：
 
-```bash
-# 类型检查
-uv run mypy src
+| 脚本 | 引擎 | 规模 |
+|---|---|---|
+| `01_small_db.sql` | PostgreSQL | blog_small，7 表 + 3 视图 |
+| `02_medium_db.sql` | PostgreSQL | 电商，25 表 |
+| `03_large_db.sql` | PostgreSQL | CRM，55+ 表 |
+| `04_mysql_blog.sql` | MySQL | blog_small 的 MySQL 版 |
 
-# Lint 和格式化
-uv run ruff check --fix .
-uv run ruff format .
-
-# 运行所有质量检查
-uv run pytest --cov=src --cov-fail-under=80
-uv run mypy src
-uv run ruff check .
-```
-
-### 项目结构
-
-```
-pg-mcp/
-├── src/pg_mcp/
-│   ├── cache/              # Schema 缓存
-│   ├── config/             # 配置管理
-│   ├── db/                 # 数据库连接池
-│   ├── models/             # 数据模型
-│   ├── observability/      # 日志、指标、追踪
-│   ├── prompts/            # LLM Prompt 模板
-│   ├── resilience/         # 熔断器、限流器
-│   ├── services/           # 核心业务逻辑
-│   │   ├── orchestrator.py      # 查询协调
-│   │   ├── sql_generator.py     # 基于 LLM 的 SQL 生成
-│   │   ├── sql_validator.py     # 安全验证
-│   │   ├── sql_executor.py      # 查询执行
-│   │   └── result_validator.py  # 结果验证
-│   └── server.py           # FastMCP 服务器
-├── tests/
-│   ├── unit/               # 单元测试
-│   ├── integration/        # 集成测试
-│   └── e2e/                # 端到端测试
-├── fixtures/               # 测试数据库 fixture
-├── .env.example            # 环境模板
-├── pyproject.toml          # 项目配置
-└── main.py                 # 入口点
-```
+无本地 psql 客户端时可用 `scripts/load_fixture.py` 加载 PG fixture。
 
 ## Docker 部署
 
-### 构建镜像
+`docker-compose.yml` 同时提供 PostgreSQL、MySQL（自动灌入测试库）与 pg-mcp 服务：
 
 ```bash
-docker build -t pg-mcp:latest .
-```
-
-### 运行容器
-
-```bash
-docker run -d \
-  --name pg-mcp \
-  -e DATABASE_HOST=your-db-host \
-  -e DATABASE_NAME=your-db \
-  -e DATABASE_USER=your-user \
-  -e DATABASE_PASSWORD=your-password \
-  -e OPENAI_API_KEY=sk-your-key \
-  -p 9090:9090 \
-  pg-mcp:latest
-```
-
-### Docker Compose
-
-```bash
-# 启动所有服务（PostgreSQL + pg-mcp）
 docker-compose up -d
-
-# 查看日志
 docker-compose logs -f pg-mcp
-
-# 停止服务
-docker-compose down
 ```
 
-详细配置参考 `docker-compose.yml`。
+## 安全说明
 
-## 监控
-
-### 指标
-
-服务器在端口 9090（可配置）上暴露 Prometheus 指标：
-
-```bash
-curl http://localhost:9090/metrics
-```
-
-**可用指标：**
-
-- `pg_mcp_queries_total` - 已处理的总查询数
-- `pg_mcp_query_duration_seconds` - 查询执行时间直方图
-- `pg_mcp_sql_generation_duration_seconds` - SQL 生成时间
-- `pg_mcp_sql_validation_failures_total` - 验证失败次数
-- `pg_mcp_database_errors_total` - 数据库错误数
-- `pg_mcp_llm_tokens_used_total` - LLM token 使用总数
-
-### 日志
-
-结构化 JSON 日志（或文本格式）输出到标准输出：
-
-```json
-{
-  "timestamp": "2025-12-20T10:30:00.123Z",
-  "level": "INFO",
-  "message": "Query executed successfully",
-  "database": "mydb",
-  "execution_time": 0.023,
-  "row_count": 42
-}
-```
+- 默认只读：仅允许单条 SELECT；PG 端在只读事务中执行，并设置安全 `search_path`
+- 表/列黑名单、危险函数黑名单（`pg_sleep`、文件 I/O 等）在 SQL 解析层强制
+- MySQL 只读性依赖 SQL 校验层 + 只读账号（建议），不依赖事务特性
+- API Key/密码在本机配置文件中为明文（已 gitignore），`GET /api/settings` 永不
+  回传完整密钥；生产环境请使用只读账号与秘密管理服务
 
 ## 故障排查
 
-### 常见问题
-
-#### 连接被拒绝
-
-```
-Error: Connection to database failed
-```
-
-**解决方案**：验证 PostgreSQL 正在运行且凭证正确：
-
-```bash
-psql -h $DATABASE_HOST -U $DATABASE_USER -d $DATABASE_NAME
-```
-
-#### OpenAI API 错误
-
-```
-Error: OpenAI API request failed
-```
-
-**解决方案**：
-
-1. 检查 API 密钥是否有效且有额度
-2. 验证网络连接
-3. 如果请求超时，检查 `OPENAI_TIMEOUT` 设置
-
-#### 查询超时
-
-```
-Error: Query execution timeout exceeded
-```
-
-**解决方案**：
-
-1. 增加 `SECURITY_MAX_EXECUTION_TIME`
-2. 优化数据库（添加索引、VACUUM）
-3. 简化查询或添加过滤条件
-
-#### Schema 缓存问题
-
-```
-Error: Schema not found in cache
-```
-
-**解决方案**：
-
-1. 重启服务器以重新加载 Schema
-2. 验证数据库用户有 Schema 读取权限
-3. 检查 `CACHE_ENABLED` 是否设置为 `true`
-
-### 调试模式
-
-启用调试日志：
-
-```bash
-export OBSERVABILITY_LOG_LEVEL=DEBUG
-uv run python main.py
-```
-
-## Claude Desktop 配置
-
-### macOS/Linux 配置
-
-编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`：
-
-```json
-{
-  "mcpServers": {
-    "postgres": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "/Users/yourname/projects/pg-mcp",
-        "run",
-        "python",
-        "main.py"
-      ],
-      "env": {
-        "DATABASE_HOST": "localhost",
-        "DATABASE_PORT": "5432",
-        "DATABASE_NAME": "mydb",
-        "DATABASE_USER": "postgres",
-        "DATABASE_PASSWORD": "your-password",
-        "OPENAI_API_KEY": "sk-your-api-key-here",
-        "OPENAI_MODEL": "gpt-5.2-mini",
-        "SECURITY_MAX_ROWS": "10000",
-        "CACHE_ENABLED": "true",
-        "OBSERVABILITY_LOG_LEVEL": "INFO"
-      }
-    }
-  }
-}
-```
-
-### Windows 配置
-
-编辑 `%APPDATA%\Claude\claude_desktop_config.json`：
-
-```json
-{
-  "mcpServers": {
-    "postgres": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "C:\\Users\\YourName\\projects\\pg-mcp",
-        "run",
-        "python",
-        "main.py"
-      ],
-      "env": {
-        "DATABASE_HOST": "localhost",
-        "DATABASE_NAME": "mydb",
-        "DATABASE_USER": "postgres",
-        "DATABASE_PASSWORD": "your-password",
-        "OPENAI_API_KEY": "sk-your-api-key-here"
-      }
-    }
-  }
-}
-```
-
-### 使用 Python Virtualenv
-
-如果不使用 UV，请直接配置 Python：
-
-```json
-{
-  "mcpServers": {
-    "postgres": {
-      "command": "/absolute/path/to/pg-mcp/.venv/bin/python",
-      "args": ["main.py"],
-      "cwd": "/absolute/path/to/pg-mcp",
-      "env": {
-        "DATABASE_HOST": "localhost",
-        ...
-      }
-    }
-  }
-}
-```
-
-### 重启 Claude Desktop
-
-编辑配置后：
-
-1. 完全退出 Claude Desktop
-2. 重启 Claude Desktop
-3. PostgreSQL MCP 服务器将可用
-
-## 安全考虑
-
-### 生产环境部署
-
-1. **使用只读数据库用户**：创建专用 PostgreSQL 用户，仅具有 SELECT 权限：
-
-```sql
-CREATE USER pg_mcp_readonly WITH PASSWORD 'secure-password';
-GRANT CONNECT ON DATABASE your_database TO pg_mcp_readonly;
-GRANT USAGE ON SCHEMA public TO pg_mcp_readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO pg_mcp_readonly;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-  GRANT SELECT ON TABLES TO pg_mcp_readonly;
-```
-
-2. **保护 API 密钥**：使用环境变量或秘密管理系统，切勿提交到版本控制
-
-3. **网络隔离**：在隔离网络中运行服务器，通过 IP 限制数据库访问
-
-4. **监控使用**：启用指标并为异常模式设置告警
-
-5. **限流**：配置合适的限流参数以防止滥用
-
-6. **日志清理**：敏感数据会自动从日志中过滤
+| 现象 | 处理 |
+|---|---|
+| `llm_unavailable` / 认证失败 | 检查 Provider 对应的 API Key；网关需同时配 `ANTHROPIC_BASE_URL` |
+| 启动时连不上库 | 确认 `.env` / 设置页中的连接信息；`DATABASE_*` 环境变量会覆盖配置文件 |
+| 请求被限流 | 调大 `RESILIENCE_QUERY_RATE_LIMIT` / `RESILIENCE_LLM_RATE_LIMIT` |
+| 改了配置 MCP 未生效 | stdio 进程启动时读配置，重启 Claude Desktop |
 
 ## 许可证
 
-[您的许可证信息]
-
-## 贡献
-
-欢迎贡献！请参阅 CONTRIBUTING.md 了解指南。
-
-## 支持
-
-如有问题和疑问：
-
-- GitHub Issues：[repository-url]/issues
-- 文档：查看 `specs/w5/` 目录获取详细设计文档
-
-## 致谢
-
-- 基于 [FastMCP](https://github.com/jlowin/fastmcp) 构建
-- SQL 解析由 [sqlglot](https://github.com/tobymao/sqlglot) 提供
-- 数据库驱动：[asyncpg](https://github.com/MagicStack/asyncpg)
+仅供课程作业演示使用。

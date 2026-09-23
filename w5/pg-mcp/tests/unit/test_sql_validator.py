@@ -154,7 +154,7 @@ class TestRejectedStatements:
     @pytest.fixture
     def validator(self) -> SQLValidator:
         """Create validator for testing rejected statements."""
-        config = SecurityConfig(allow_write_operations=False)
+        config = SecurityConfig()
         return SQLValidator(config=config)
 
     def test_insert_rejected(self, validator: SQLValidator) -> None:
@@ -659,3 +659,62 @@ class TestSubqueryWithForbiddenOperations:
         is_valid, error = validator.validate(sql)
         assert is_valid
         assert error is None
+
+
+class TestCoverageEdgeCases:
+    """Cover remaining validation branches (AC8: security module >= 95%)."""
+
+    @pytest.fixture
+    def validator(self) -> SQLValidator:
+        return SQLValidator(config=SecurityConfig())
+
+    def test_empty_statement_after_comment_only_sql(self, validator: SQLValidator) -> None:
+        """Comment-only SQL yields no statements -> SQLParseError."""
+        with pytest.raises(SQLParseError, match="No valid SQL statement"):
+            validator.validate_or_raise("-- just a comment")
+
+    def test_multiple_statements_rejected(self, validator: SQLValidator) -> None:
+        with pytest.raises(SecurityViolationError, match="Multiple statements"):
+            validator.validate_or_raise("SELECT 1; SELECT 2")
+
+    def test_cte_without_main_query(self, validator: SQLValidator) -> None:
+        """WITH ... containing no main query -> SQLParseError."""
+        with pytest.raises(SQLParseError):
+            validator.validate_or_raise("WITH cte AS (SELECT 1)")
+
+    def test_forbidden_statement_type_message(self, validator: SQLValidator) -> None:
+        with pytest.raises(SecurityViolationError, match="TruncateTable"):
+            validator.validate_or_raise("TRUNCATE TABLE users")
+
+    def test_blocked_table_and_column_via_config(self) -> None:
+        validator = SQLValidator(
+            config=SecurityConfig(),
+            blocked_tables=["secrets"],
+            blocked_columns=["password_hash"],
+        )
+        ok, err = validator.validate("SELECT * FROM secrets")
+        assert not ok and "secrets" in err
+        ok, err = validator.validate("SELECT password_hash FROM users")
+        assert not ok and "password_hash" in err
+
+    def test_dml_in_subquery_fails_to_parse(self, validator: SQLValidator) -> None:
+        """DML inside a subquery does not parse -> SQLParseError (rejected)."""
+        with pytest.raises(SQLParseError):
+            validator.validate_or_raise(
+                "SELECT * FROM users WHERE id IN (INSERT INTO logs VALUES (1) RETURNING id)"
+            )
+
+    def test_non_explain_command_rejected(self, validator: SQLValidator) -> None:
+        """Non-EXPLAIN commands (e.g. VACUUM) are rejected."""
+        with pytest.raises(SecurityViolationError, match="VACUUM"):
+            validator.validate_or_raise("VACUUM users")
+
+    def test_cte_with_forbidden_main_query(self, validator: SQLValidator) -> None:
+        """WITH ... TRUNCATE parses into a forbidden main query -> rejected."""
+        with pytest.raises(SecurityViolationError, match="DELETE"):
+            validator.validate_or_raise("WITH cte AS (SELECT 1) DELETE FROM users")
+
+    def test_mysql_dialect_parse(self) -> None:
+        validator = SQLValidator(config=SecurityConfig(), dialect="mysql")
+        ok, err = validator.validate("SELECT `id` FROM `users`")
+        assert ok, err

@@ -4,6 +4,8 @@ This module implements comprehensive metrics collection using prometheus_client,
 tracking query requests, LLM calls, database operations, and system health.
 """
 
+import contextlib
+
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 
@@ -189,8 +191,26 @@ class MetricsCollector:
 
         This method is primarily useful for testing purposes.
         """
-        # Note: Prometheus client doesn't provide a clean way to reset metrics
-        # This is mainly for testing - in production, metrics are cumulative
+        # Re-creating metrics in the default registry raises
+        # "Duplicated timeseries" unless the previous collectors are
+        # unregistered first.
+        import prometheus_client
+
+        for attr in (
+            "query_requests",
+            "query_duration",
+            "llm_calls",
+            "llm_latency",
+            "llm_tokens_used",
+            "sql_rejected",
+            "db_connections_active",
+            "db_query_duration",
+            "schema_cache_age",
+        ):
+            collector = getattr(self, attr, None)
+            if collector is not None:
+                with contextlib.suppress(KeyError, ValueError):
+                    prometheus_client.REGISTRY.unregister(collector)
         self._initialize_metrics()
 
 

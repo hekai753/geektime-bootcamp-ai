@@ -11,7 +11,7 @@ from openai import AsyncOpenAI
 
 from pg_mcp.config.settings import OpenAIConfig
 from pg_mcp.models.errors import LLMError, LLMTimeoutError, LLMUnavailableError
-from pg_mcp.prompts.sql_generation import SQL_GENERATION_SYSTEM_PROMPT, build_user_prompt
+from pg_mcp.prompts.sql_generation import build_user_prompt, get_system_prompt
 
 if TYPE_CHECKING:
     from openai.types.chat import ChatCompletion
@@ -43,6 +43,9 @@ class SQLGenerator:
         """
         self.config = config
         self.client = AsyncOpenAI(api_key=config.api_key.get_secret_value(), timeout=config.timeout)
+        # Target SQL dialect; orchestrator sets this per database when the
+        # generator instance is dialect-specific.
+        self.dialect = "postgres"
 
     async def generate(
         self,
@@ -96,15 +99,7 @@ class SQLGenerator:
         )
 
         try:
-            response: ChatCompletion = await self.client.chat.completions.create(
-                model=self.config.model,
-                messages=[
-                    {"role": "system", "content": SQL_GENERATION_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
-            )
+            content = await self._call_llm(get_system_prompt(self.dialect), user_prompt)
         except TimeoutError as e:
             raise LLMTimeoutError(
                 message=f"OpenAI API request timed out after {self.config.timeout}s",
@@ -123,25 +118,15 @@ class SQLGenerator:
                     message="OpenAI API rate limit exceeded",
                     details={"error": error_msg},
                 ) from e
+            if isinstance(e, LLMError):
+                # Already-classified provider errors pass through unchanged
+                raise
             raise LLMError(
                 message=f"OpenAI API request failed: {error_msg}",
                 details={"error": error_msg},
             ) from e
 
-        # Extract SQL from response
-        if not response.choices:
-            raise LLMError(
-                message="OpenAI returned empty response",
-                details={"response": response.model_dump()},
-            )
-
-        content = response.choices[0].message.content
-        if not content:
-            raise LLMError(
-                message="OpenAI returned empty message content",
-                details={"response": response.model_dump()},
-            )
-
+        # Extract SQL from the returned content
         sql = self._extract_sql(content)
         if not sql:
             raise LLMError(
@@ -150,6 +135,46 @@ class SQLGenerator:
             )
 
         return sql
+
+    async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
+        """Send a chat completion request to OpenAI.
+
+        Subclasses override this to talk to a different LLM provider; the
+        rest of the pipeline (prompt building, SQL extraction, error
+        classification) is shared.
+
+        Args:
+            system_prompt: System instruction prompt.
+            user_prompt: User message containing question and schema.
+
+        Returns:
+            str: Raw message content from the model.
+
+        Raises:
+            TimeoutError: If the request times out (mapped by generate()).
+            Exception: Provider errors (mapped by generate()).
+        """
+        response: ChatCompletion = await self.client.chat.completions.create(
+            model=self.config.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens,
+        )
+        if not response.choices:
+            raise LLMError(
+                message="OpenAI returned empty response",
+                details={"model": self.config.model},
+            )
+        content = response.choices[0].message.content
+        if not content:
+            raise LLMError(
+                message="OpenAI returned empty message content",
+                details={"model": self.config.model},
+            )
+        return content
 
     def _extract_sql(self, content: str) -> str | None:
         """Extract SQL query from LLM response content.

@@ -58,6 +58,40 @@ class ResultValidator:
             timeout=validation_config.timeout_seconds,
         )
 
+    async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
+        """Send a chat completion request to OpenAI (JSON output mode).
+
+        Subclasses override this to talk to a different LLM provider.
+
+        Args:
+            system_prompt: System instruction prompt.
+            user_prompt: Validation prompt with question/sql/results.
+
+        Returns:
+            str: Raw message content from the model.
+
+        Raises:
+            TimeoutError: If the request times out.
+            Exception: Provider errors (handled by validate()).
+        """
+        response: ChatCompletion = await self.client.chat.completions.create(
+            model=self.openai_config.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=500,
+            temperature=0.0,  # Use deterministic output for validation
+            response_format={"type": "json_object"},  # Ensure JSON response
+        )
+        content = response.choices[0].message.content if response.choices else None
+        if not content:
+            raise LLMError(
+                message="OpenAI returned empty message content for result validation",
+                details={"model": self.openai_config.model},
+            )
+        return content
+
     async def validate(
         self,
         question: str,
@@ -117,31 +151,8 @@ class ResultValidator:
         )
 
         try:
-            # Call OpenAI API with structured JSON output
-            response: ChatCompletion = await self.client.chat.completions.create(
-                model=self.openai_config.model,
-                messages=[
-                    {"role": "system", "content": RESULT_VALIDATION_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=500,
-                temperature=0.0,  # Use deterministic output for validation
-                response_format={"type": "json_object"},  # Ensure JSON response
-            )
-
-            # Extract and parse the response
-            if not response.choices:
-                raise LLMError(
-                    message="OpenAI returned empty response for result validation",
-                    details={"response": response.model_dump()},
-                )
-
-            content = response.choices[0].message.content
-            if not content:
-                raise LLMError(
-                    message="OpenAI returned empty message content for result validation",
-                    details={"response": response.model_dump()},
-                )
+            # Call the configured LLM provider (JSON output requested)
+            content = await self._call_llm(RESULT_VALIDATION_SYSTEM_PROMPT, prompt)
 
             # Parse JSON response
             try:

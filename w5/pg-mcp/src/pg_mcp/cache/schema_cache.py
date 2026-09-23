@@ -11,8 +11,7 @@ from datetime import UTC, datetime
 
 from asyncpg import Pool
 
-from pg_mcp.config.settings import CacheConfig
-from pg_mcp.db.introspection import SchemaIntrospector
+from pg_mcp.config.settings import CacheConfig, DatabaseConfig
 from pg_mcp.models.schema import DatabaseSchema
 
 logger = logging.getLogger(__name__)
@@ -81,6 +80,7 @@ class SchemaCache:
         self,
         database_name: str,
         pool: Pool,
+        db_config: DatabaseConfig | None = None,
     ) -> DatabaseSchema:
         """Load and cache database schema.
 
@@ -90,25 +90,42 @@ class SchemaCache:
         Args:
             database_name: Name of the database to introspect.
             pool: Connection pool for the database.
+            db_config: Optional database config selecting the engine
+                (postgres by default; mysql uses information_schema).
 
         Returns:
             DatabaseSchema: Loaded database schema.
 
         Raises:
-            asyncpg.PostgresError: If database connection or introspection fails.
+            Exception: If database connection or introspection fails.
 
         Example:
             >>> schema = await cache.load("mydb", pool)
             >>> print(f"Loaded {len(schema.tables)} tables")
         """
-        introspector = SchemaIntrospector(pool, database_name)
+        from pg_mcp.db.driver import create_introspector_for
+
+        introspector = create_introspector_for(pool, database_name, db_config or DatabaseConfig())
         schema = await introspector.introspect()
 
         if self.config.enabled:
             self._cache[database_name] = schema
             self._cache_timestamps[database_name] = datetime.now(UTC)
+            self._enforce_max_size()
 
         return schema
+
+    def _enforce_max_size(self) -> None:
+        """Evict least-recently-loaded schemas when the cache exceeds max_size.
+
+        Keeps the ``max_size`` most recently loaded schemas, honoring the
+        ``CACHE_MAX_SIZE`` configuration that was previously unused.
+        """
+        max_size = self.config.max_size
+        while len(self._cache) > max_size:
+            oldest = min(self._cache_timestamps.items(), key=lambda kv: kv[1])[0]
+            del self._cache[oldest]
+            del self._cache_timestamps[oldest]
 
     async def refresh(
         self,

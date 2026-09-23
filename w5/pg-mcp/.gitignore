@@ -82,3 +82,6 @@ site/
 
 # pytest
 .pytest_cache/
+
+# Web settings-page persisted configuration (may contain credentials)
+pg-mcp.config.json

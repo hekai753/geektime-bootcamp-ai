@@ -12,10 +12,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class DatabaseConfig(BaseSettings):
-    """PostgreSQL database connection configuration."""
+    """Database connection configuration (PostgreSQL or MySQL)."""
 
-    model_config = SettingsConfigDict(env_prefix="DATABASE_")
+    model_config = SettingsConfigDict(
+        env_prefix="DATABASE_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
+    db_type: Literal["postgres", "mysql"] = Field(
+        default="postgres",
+        description="Database engine type (DATABASE_DB_TYPE)",
+    )
     host: str = Field(default="localhost", description="Database host")
     port: int = Field(default=5432, ge=1, le=65535, description="Database port")
     name: str = Field(default="postgres", description="Database name")
@@ -38,15 +44,28 @@ class DatabaseConfig(BaseSettings):
         return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
 
     @property
+    def sqlglot_dialect(self) -> str:
+        """SQL dialect name used by the validator/parser for this database."""
+        return "mysql" if self.db_type == "mysql" else "postgres"
+
+    @property
     def safe_dsn(self) -> str:
         """Build DSN with masked password for logging."""
         return f"postgresql://{self.user}:***@{self.host}:{self.port}/{self.name}"
 
 
 class OpenAIConfig(BaseSettings):
-    """OpenAI API configuration."""
+    """OpenAI API configuration.
 
-    model_config = SettingsConfigDict(env_prefix="OPENAI_")
+    The API key is intentionally NOT validated at config load time: the
+    server must be able to start (and run tests) without a key, and a key
+    is only required when the OpenAI provider is actually invoked. LLM
+    clients are responsible for raising LLMError when the key is missing.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="OPENAI_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     api_key: SecretStr = Field(default=SecretStr(""), description="OpenAI API key")
     model: str = Field(default="gpt-4o-mini", description="Model to use for SQL generation")
@@ -58,26 +77,54 @@ class OpenAIConfig(BaseSettings):
         default=30.0, ge=5.0, le=120.0, description="API request timeout in seconds"
     )
 
-    @field_validator("api_key")
-    @classmethod
-    def validate_api_key(cls, v: SecretStr) -> SecretStr:
-        """Validate API key is not empty and has correct format."""
-        api_key_str = v.get_secret_value()
-        if not api_key_str or not api_key_str.strip():
-            raise ValueError("OpenAI API key must not be empty")
-        if not api_key_str.startswith("sk-"):
-            raise ValueError("OpenAI API key must start with 'sk-'")
-        return v
+
+class AnthropicConfig(BaseSettings):
+    """Anthropic Claude API configuration.
+
+    The API key is validated lazily by the LLM client when a provider call
+    is actually made (mirrors :class:`OpenAIConfig`).
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="ANTHROPIC_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
+
+    api_key: SecretStr = Field(default=SecretStr(""), description="Anthropic API key")
+    auth_token: SecretStr = Field(
+        default=SecretStr(""),
+        description="Bearer token (ANTHROPIC_AUTH_TOKEN) for Anthropic-compatible gateways",
+    )
+    base_url: str | None = Field(
+        default=None,
+        description="Custom API base URL (ANTHROPIC_BASE_URL) for gateways/proxies",
+    )
+    model: str = Field(default="claude-haiku-4-5", description="Claude model for SQL generation")
+    max_tokens: int = Field(default=2000, ge=100, le=8192, description="Maximum tokens in response")
+    timeout: float = Field(
+        default=30.0, ge=5.0, le=120.0, description="API request timeout in seconds"
+    )
+
+
+class LLMProviderConfig(BaseSettings):
+    """Which LLM provider to use for SQL generation and result validation."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="LLM_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
+
+    provider: Literal["openai", "anthropic"] = Field(
+        default="openai",
+        description="LLM provider used for SQL generation (LLM_PROVIDER)",
+    )
 
 
 class SecurityConfig(BaseSettings):
     """Security and access control configuration."""
 
-    model_config = SettingsConfigDict(env_prefix="SECURITY_")
-
-    allow_write_operations: bool = Field(
-        default=False, description="Allow write operations (INSERT, UPDATE, DELETE)"
+    model_config = SettingsConfigDict(
+        env_prefix="SECURITY_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
+
     blocked_functions: list[str] = Field(
         default_factory=lambda: [
             "pg_sleep",
@@ -87,6 +134,18 @@ class SecurityConfig(BaseSettings):
             "lo_export",
         ],
         description="List of blocked PostgreSQL functions",
+    )
+    blocked_tables: list[str] = Field(
+        default_factory=list,
+        description="Tables that queries may not access (e.g. secrets, api_keys)",
+    )
+    blocked_columns: list[str] = Field(
+        default_factory=list,
+        description="Columns that queries may not reference (e.g. password_hash)",
+    )
+    allow_explain: bool = Field(
+        default=False,
+        description="Whether EXPLAIN statements are permitted",
     )
     max_rows: int = Field(default=10000, ge=1, le=100000, description="Maximum rows to return")
     max_execution_time: float = Field(
@@ -99,9 +158,9 @@ class SecurityConfig(BaseSettings):
         default="public", description="Safe search_path to set during query execution"
     )
 
-    @field_validator("blocked_functions", mode="before")
+    @field_validator("blocked_functions", "blocked_tables", "blocked_columns", mode="before")
     @classmethod
-    def parse_blocked_functions(cls, v: str | list[str]) -> list[str]:
+    def parse_blocked_list(cls, v: str | list[str]) -> list[str]:
         """Parse comma-separated string or list."""
         if isinstance(v, str):
             return [f.strip() for f in v.split(",") if f.strip()]
@@ -111,13 +170,12 @@ class SecurityConfig(BaseSettings):
 class ValidationConfig(BaseSettings):
     """Query validation configuration."""
 
-    model_config = SettingsConfigDict(env_prefix="VALIDATION_")
+    model_config = SettingsConfigDict(
+        env_prefix="VALIDATION_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     max_question_length: int = Field(
         default=10000, ge=1, le=50000, description="Maximum question length in characters"
-    )
-    min_confidence_score: int = Field(
-        default=70, ge=0, le=100, description="Minimum confidence score (0-100)"
     )
 
     # Result validation settings
@@ -136,7 +194,9 @@ class ValidationConfig(BaseSettings):
 class CacheConfig(BaseSettings):
     """Schema cache configuration."""
 
-    model_config = SettingsConfigDict(env_prefix="CACHE_")
+    model_config = SettingsConfigDict(
+        env_prefix="CACHE_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     schema_ttl: int = Field(
         default=3600, ge=60, le=86400, description="Schema cache TTL in seconds"
@@ -148,9 +208,29 @@ class CacheConfig(BaseSettings):
 class ResilienceConfig(BaseSettings):
     """Resilience and fault tolerance configuration."""
 
-    model_config = SettingsConfigDict(env_prefix="RESILIENCE_")
+    model_config = SettingsConfigDict(
+        env_prefix="RESILIENCE_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     max_retries: int = Field(default=3, ge=0, le=10, description="Maximum retry attempts")
+    query_rate_limit: int = Field(
+        default=10,
+        ge=1,
+        le=1000,
+        description="Maximum concurrent queries (RESILIENCE_QUERY_RATE_LIMIT)",
+    )
+    llm_rate_limit: int = Field(
+        default=5,
+        ge=1,
+        le=1000,
+        description="Maximum concurrent LLM calls (RESILIENCE_LLM_RATE_LIMIT)",
+    )
+    rate_limit_timeout: float = Field(
+        default=5.0,
+        ge=0.1,
+        le=300.0,
+        description="Seconds to wait for a rate-limiter slot before rejecting",
+    )
     retry_delay: float = Field(
         default=1.0, ge=0.1, le=10.0, description="Initial retry delay in seconds"
     )
@@ -168,7 +248,9 @@ class ResilienceConfig(BaseSettings):
 class ObservabilityConfig(BaseSettings):
     """Observability and monitoring configuration."""
 
-    model_config = SettingsConfigDict(env_prefix="OBSERVABILITY_")
+    model_config = SettingsConfigDict(
+        env_prefix="OBSERVABILITY_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     metrics_enabled: bool = Field(default=True, description="Enable Prometheus metrics")
     metrics_port: int = Field(
@@ -177,7 +259,7 @@ class ObservabilityConfig(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO", description="Logging level"
     )
-    log_format: Literal["json", "text"] = Field(default="text", description="Log format")
+    log_format: Literal["json", "text"] = Field(default="json", description="Log format")
 
 
 class Settings(BaseSettings):
@@ -196,7 +278,13 @@ class Settings(BaseSettings):
 
     # Nested configurations
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    #: Additional databases addressable via the request ``database`` field.
+    #: Configure through the JSON config file or the DATABASES env variable, e.g.:
+    #:   DATABASES='{"shop": {"db_type": "mysql", "host": "...", "name": "shop"}}'
+    databases: dict[str, DatabaseConfig] = Field(default_factory=dict)
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
+    anthropic: AnthropicConfig = Field(default_factory=AnthropicConfig)
+    llm: LLMProviderConfig = Field(default_factory=LLMProviderConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
